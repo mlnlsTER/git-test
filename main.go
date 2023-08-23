@@ -12,7 +12,7 @@ import (
 
 const bufferDrainInterval time.Duration = 15 * time.Second
 
-const bufferSize int = 100
+const bufferSize int = 10
 
 type RingBuffer struct {
 	array []int
