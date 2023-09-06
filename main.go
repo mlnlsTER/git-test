@@ -2,7 +2,7 @@ package main
 
 import (
 	"bufio"
-	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -93,12 +93,12 @@ func main() {
 				scanner.Scan()
 				data = scanner.Text()
 				if strings.EqualFold(data, "exit") {
-					fmt.Println("Программа завершила работу!")
+					log.Println("Программа завершила работу!")
 					return
 				}
 				i, err := strconv.Atoi(data)
 				if err != nil {
-					fmt.Println("Программа обрабатывает только целые числа!")
+					log.Println("Программа обрабатывает только целые числа!")
 					continue
 				}
 				c <- &i
@@ -113,12 +113,14 @@ func main() {
 				select {
 				case data := <-c:
 					if *data > 0 {
-						fmt.Println("Успешно пройдена проверка фильтра отрицательных чисел:", *data)
+						log.Println("Успешно пройдена проверка фильтра отрицательных чисел:", *data)
 						select {
 						case convertedIntChan <- data:
 						case <-done:
 							return
 						}
+					} else {
+						log.Println("Не пройдена проверка фильтра отрицательных чисел:", *data)
 					}
 				case <-done:
 					return
@@ -135,12 +137,14 @@ func main() {
 				select {
 				case data := <-c:
 					if *data != 0 && *data%3 == 0 {
-						fmt.Println("Успешно пройдена проверка фильтра чисел, не кратных 3:", *data)
+						log.Println("Успешно пройдена проверка фильтра чисел, не кратных 3:", *data)
 						select {
 						case filteredIntChan <- data:
 						case <-done:
 							return
 						}
+					} else {
+						log.Println("Не пройдена проверка фильтра чисел, не кратных 3:", *data)
 					}
 				case <-done:
 					return
@@ -190,8 +194,8 @@ func main() {
 	consumer := func(done <-chan bool, c <-chan *int) {
 		for {
 			select {
-			case data := <-c: 
-				fmt.Printf("Обработаны данные: %d\n", *data)
+			case data := <-c:
+				log.Printf("Обработаны данные: %d\n", *data)
 			case <-done:
 				return
 			}
