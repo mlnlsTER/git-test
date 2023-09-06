@@ -15,42 +15,50 @@ const bufferDrainInterval time.Duration = 15 * time.Second
 const bufferSize int = 10
 
 type RingBuffer struct {
-	array []int
-	pos   int
-	size  int
-	m     sync.Mutex
+	size   int
+	data   []*int
+	Start  int
+	End    int
+	isFull bool
+	m      sync.Mutex
 }
 
 func NewRingBuffer(size int) *RingBuffer {
-	return &RingBuffer{make([]int, size), -1, size, sync.Mutex{}}
+	return &RingBuffer{size, make([]*int, size), 0, 0, false, sync.Mutex{}}
 }
 
-func (r *RingBuffer) Push(el int) {
+func (r *RingBuffer) Push(el *int) {
 	r.m.Lock()
 	defer r.m.Unlock()
-	if r.pos == r.size-1 {
-		for i := 1; i <= r.size-1; i++ {
-			r.array[i-1] = r.array[i]
-		}
-		r.array[r.pos] = el
-	} else {
-		r.pos++
-		r.array[r.pos] = el
+	r.data[r.End] = el
+	r.End = (r.End + 1) % r.size
+	if r.End == r.Start {
+		r.Start = (r.Start + 1) % r.size
+		r.isFull = true
 	}
 }
 
-func (r *RingBuffer) Get() []int {
-	if r.pos < 0 {
+func (r *RingBuffer) Get() []*int {
+	r.m.Lock()
+	defer r.m.Unlock()
+	if r.Start == r.End && !r.isFull {
 		return nil
 	}
-	r.m.Lock()
-	defer r.m.Unlock()
-	var output []int = r.array[:r.pos+1]
-	r.pos = -1
+	var output []*int
+	index := r.Start
+	for {
+		output = append(output, r.data[index])
+		index = (index + 1) % r.size
+		if index == r.End {
+			break
+		}
+	}
+	r.Start = r.End
+	r.isFull = false
 	return output
 }
 
-type StageInt func(<-chan bool, <-chan int) <-chan int
+type StageInt func(<-chan bool, <-chan *int) <-chan *int
 
 type PipeLine struct {
 	stages []StageInt
@@ -61,20 +69,21 @@ func NewPipeline(done <-chan bool, stages ...StageInt) *PipeLine {
 	return &PipeLine{done: done, stages: stages}
 }
 
-func (p *PipeLine) Run(source <-chan int) <-chan int {
-	var c <-chan int = source
+func (p *PipeLine) Run(source <-chan *int) <-chan *int {
+	var c <-chan *int = source
 	for index := range p.stages {
 		c = p.runStage(p.stages[index], c)
 	}
 	return c
 }
 
-func (p *PipeLine) runStage(stage StageInt, sourceChan <-chan int) <-chan int {
+func (p *PipeLine) runStage(stage StageInt, sourceChan <-chan *int) <-chan *int {
 	return stage(p.done, sourceChan)
 }
+
 func main() {
-	dataSource := func() (<-chan int, <-chan bool) {
-		c := make(chan int)
+	dataSource := func() (<-chan *int, <-chan bool) {
+		c := make(chan *int)
 		done := make(chan bool)
 		go func() {
 			defer close(done)
@@ -92,19 +101,19 @@ func main() {
 					fmt.Println("Программа обрабатывает только целые числа!")
 					continue
 				}
-				c <- i
+				c <- &i
 			}
 		}()
 		return c, done
 	}
-	negativeFilter := func(done <-chan bool, c <-chan int) <-chan int {
-		convertedIntChan := make(chan int)
+	negativeFilter := func(done <-chan bool, c <-chan *int) <-chan *int {
+		convertedIntChan := make(chan *int)
 		go func() {
 			for {
 				select {
 				case data := <-c:
-					if data > 0 {
-						fmt.Println("Успешно пройдена проверка фильтра отрицательных чисел:", data)
+					if *data > 0 {
+						fmt.Println("Успешно пройдена проверка фильтра отрицательных чисел:", *data)
 						select {
 						case convertedIntChan <- data:
 						case <-done:
@@ -119,14 +128,14 @@ func main() {
 		return convertedIntChan
 	}
 
-	NotMultipleOfThreeFilter := func(done <-chan bool, c <-chan int) <-chan int {
-		filteredIntChan := make(chan int)
+	NotMultipleOfThreeFilter := func(done <-chan bool, c <-chan *int) <-chan *int {
+		filteredIntChan := make(chan *int)
 		go func() {
 			for {
 				select {
 				case data := <-c:
-					if data != 0 && data%3 == 0 {
-						fmt.Println("Успешно пройдена проверка фильтра чисел, не кратных 3:", data)
+					if *data != 0 && *data%3 == 0 {
+						fmt.Println("Успешно пройдена проверка фильтра чисел, не кратных 3:", *data)
 						select {
 						case filteredIntChan <- data:
 						case <-done:
@@ -142,14 +151,14 @@ func main() {
 		return filteredIntChan
 	}
 
-	buffer := func(done <-chan bool, c <-chan int) <-chan int {
-		bufferedIntChan := make(chan int)
-		buffer := NewRingBuffer(bufferSize)
+	buffer := func(done <-chan bool, c <-chan *int) <-chan *int {
+		bufferedIntChan := make(chan *int)
+		ringBuffer := NewRingBuffer(bufferSize)
 		go func() {
 			for {
 				select {
 				case data := <-c:
-					buffer.Push(data)
+					ringBuffer.Push(data)
 				case <-done:
 					return
 				}
@@ -160,7 +169,7 @@ func main() {
 			for {
 				select {
 				case <-time.After(bufferDrainInterval):
-					bufferData := buffer.Get()
+					bufferData := ringBuffer.Get()
 					if bufferData != nil {
 						for _, data := range bufferData {
 							select {
@@ -178,11 +187,11 @@ func main() {
 		return bufferedIntChan
 	}
 
-	consumer := func(done <-chan bool, c <-chan int) {
+	consumer := func(done <-chan bool, c <-chan *int) {
 		for {
 			select {
-			case data := <-c:
-				fmt.Printf("Обработаны данные: %d\n", data)
+			case data := <-c: 
+				fmt.Printf("Обработаны данные: %d\n", *data)
 			case <-done:
 				return
 			}
